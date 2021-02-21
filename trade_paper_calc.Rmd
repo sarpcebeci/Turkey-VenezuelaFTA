@@ -1,0 +1,495 @@
+---
+title: "trade_paper"
+output: html_document
+---
+# Turkey-Venezuela Free Trade Agreement and Its Analysis
+## Sarp Dora Cebeci - 070170403 (ITU ID)
+### sarpdoracebeci@gmail.com
+
+# Session
+```{r}
+setwd("~/Downloads/Trade_Paper")
+library(tidyverse)
+library(WDI)
+library(cepiigeodist)
+library(xlsx)
+library(tradestatistics)
+library(plm)
+library(stargazer)
+```
+
+# Datasets
+```{r}
+# downloaded from: https://www.rug.nl/ggdc/historicaldevelopment/maddison/releases/maddison-project-database-2020
+mpd_1 <- read.csv("mmpd.csv")
+mpd_1 <- mpd_1 %>% mutate(countrycode = tolower(countrycode))
+# from wits.worldbank.org api
+turkey_trade <- read_csv("turkey_trade.csv")
+# creating gdp and specifying the time period
+mpd_2 <- mpd_1 %>% mutate(gdp = gdppc * pop) %>% 
+  filter(year > 1961) %>% select(c(year, countrycode, country, gdp))
+# creating the total trade and renaming
+turkey_trade1 <- turkey_trade %>% 
+  mutate(total_trade = (export_value_usd + import_value_usd)/2) %>% 
+  select(c(year, partner_iso, partner_fullname_english, total_trade)) %>% 
+  rename(code = partner_iso, country = partner_fullname_english)
+# gathering the two
+df <- left_join(turkey_trade1, mpd_2, by = c("code" = "countrycode",
+                                       "year" = "year"))
+```
+
+```{r}
+# getting turkey's gdp 
+tr_gdp <- mpd_1 %>% mutate(gdp = gdppc * pop) %>% 
+  filter(country == "Turkey",
+         year > 1961) %>% 
+  select(gdp)
+# and the world's gdp on overall
+gdp_world <- WDI(country = "all", indicator = "NY.GDP.MKTP.CD", 
+    start = 1962, end = 2018) %>% 
+  filter(country == "World") %>%
+  select(c("NY.GDP.MKTP.CD","year")) %>%
+  rename(w_gdp = NY.GDP.MKTP.CD) %>% 
+  arrange(year)
+# combining the two
+tr_w <- gdp_world
+tr_w$tr_gdp <- tr_gdp$gdp
+# adding these two
+df2 <- left_join(df, tr_w, by = c("year" = "year"))
+```
+
+```{r}
+# distances from turkey
+## distw used which puts weight on the parts of the countries
+## economical centers trade centers
+dist_tr <- dist_cepii %>% 
+  mutate(iso_o = tolower(iso_o),
+         iso_d = tolower(iso_d)) %>% 
+  filter(iso_o == "tur") %>% 
+  select(iso_d, distw)
+# adding distance
+df3 <- left_join(df2, dist_tr, by = c("code" = "iso_d"))
+# dataset with wanted columns 
+df4 <- df3 %>% 
+  select(c(code, year, total_trade, gdp, w_gdp, tr_gdp, distw)) %>% 
+  mutate(distw = as.numeric(distw))
+```
+
+#Exports-Imports
+```{r}
+tur_ven <- read_csv("tur_ven_62_18.csv")
+tur_ven2018 <- tur_ven %>% 
+  filter(year == 2018)
+tur_ven_sections_2018 <- tur_ven2018 %>% 
+  select(c("section_shortname_english", 
+           "export_value_usd", "import_value_usd")) %>% 
+  rename(section = section_shortname_english ) %>% 
+  group_by(section) %>% 
+  summarise(exports = sum(export_value_usd, na.rm = T),
+            imports = sum(import_value_usd, na.rm = T)) %>% 
+  filter(exports > 0, 
+         imports > 0)
+plot_turkey_export_2018_bar <- tur_ven_sections_2018 %>% 
+  mutate(exports = exports / 1000000) %>% 
+  ggplot(aes(reorder(section, -exports), exports))+
+  geom_col(aes(fill = section)) + 
+  labs(title = "Turkey's exports to Venezuela in 2018", 
+       x = "", y = "", subtitle = "In million USD", caption = "Source: World Bank") + 
+  theme(legend.position = "none",
+    axis.text.x=element_text(angle=45, hjust=1))
+plot_turkey_import_2018_bar <- tur_ven_sections_2018 %>% 
+  mutate(imports = imports / 1000000) %>% 
+  ggplot(aes(reorder(section, -imports), imports))+
+  geom_col(aes(fill = section)) + 
+  labs(title = "Turkey's imports to Venezuela in 2018", 
+       x = "", y = "", subtitle = "In million USD", caption = "Source: World Bank") + 
+  theme(legend.position = "none",
+    axis.text.x=element_text(angle=45, hjust=1))
+```
+
+```{r}
+plot_turkey_export_2018_bar
+plot_turkey_import_2018_bar
+```
+
+
+# Gravity
+## Creating FTA dummy variable:
+```{r}
+# eu countries iso 3 codes for FDA dummy
+eu <- c("AUT", "BEL", "BGR", "HRV", "CYP", "CZE", "DNK", "EST", "FIN", 
+        "FRA", "DEU", "GRC", "HUN", "IRL", "ITA", "LVA", "LTU", "LUX",
+        "MLT", "NLD", "POL", "PRT", "ROU", "SVK", "SVN", "ESP", "SWE", "GBR") %>%
+  tolower()
+```
+
+```{r}
+df5 <- df4 %>% 
+  filter(year > 1961) %>%
+  mutate(
+    FTA = 0,
+    FTA = ifelse(year > 1995,ifelse(code %in% eu, 1, 0), 0),
+    FTA = ifelse(year > 2008,ifelse(code == "alb", 1, 0), 0),
+    FTA = ifelse(year > 2003,ifelse(code == "bih", 1, 0), 0),
+    FTA = ifelse(year > 2007,ifelse(code == "egy", 1, 0), 0),
+    FTA = ifelse(year > 2011,ifelse(code == "chl", 1, 0), 0),
+    FTA = ifelse(year > 2008,ifelse(code == "geo", 1, 0), 0),
+    FTA = ifelse(year > 1997,ifelse(code == "isr", 1, 0), 0),
+    FTA = ifelse(year > 2015,ifelse(code == "mys", 1, 0), 0),
+    FTA = ifelse(year > 2016,ifelse(code == "mda", 1, 0), 0),
+    FTA = ifelse(year > 2006,ifelse(code == "mar", 1, 0), 0),
+    FTA = ifelse(year > 2010,ifelse(code == "srb", 1, 0), 0),
+    FTA = ifelse(year > 2013,ifelse(code == "kor", 1, 0), 0),
+    FTA = ifelse(year > 2005,ifelse(code == "tun", 1, 0), 0),
+    FTA = ifelse(year > 2017,ifelse(code == "ven", 1, 0), 0)
+  )
+dist_n = 1.25
+gr <- df5 %>%
+  mutate(gravity = (1/w_gdp) * (tr_gdp*gdp) / distw^dist_n)
+gravity_plot <- gr %>%
+  mutate(total_trade =total_trade/ 1000000) %>%
+  filter(year > 1961) %>%
+  ggplot(aes(gravity, total_trade)) + 
+  geom_point(aes(color = total_trade, size = gravity, alpha = distw)) + 
+  geom_smooth(method = "lm", se = F, color = "red") + 
+  theme_classic()
+gravity_plot2 <- gr %>%
+  mutate(total_trade =total_trade/ 1000000,
+         dist_category = case_when(
+           distw < 5000 ~ "Short Distance",
+           distw < 10000 ~ "Middle Distance",
+           distw > 10000 ~ "Long Distance"
+         )) %>%
+  filter(!is.na(dist_category)) %>%
+  ggplot(aes(gravity, total_trade)) + 
+  geom_point(aes(color = total_trade, size = gravity, alpha = distw)) + 
+  geom_smooth(method = "lm", se = F, color = "red") + 
+  facet_grid(~ dist_category, scales = "free_y")
+gravity_ven <- gr %>%
+  mutate(total_trade =total_trade/ 1000000) %>%
+  filter(year == 2018,
+         gravity < .1) %>%
+  ggplot(aes(gravity, total_trade)) + 
+  geom_point(aes(color = distw, size = gravity)) + 
+  annotate("text", x = 0.05839045, y = 532118521/1000000, 
+           label = "Venezuela", color = "brown") + 
+  geom_abline(x = -61.23,slope = 1675.76, color = "pink", size = 2) +
+  theme_classic() 
+gr_ols <- gr %>%
+  mutate(total_trade =total_trade/ 1000000) %>%
+  filter(year > 1961) %>%
+  lm(data = .,
+     formula = total_trade ~ gravity) %>% 
+  summary()
+```
+
+```{r}
+df5
+```
+
+```{r}
+gravity_plot
+gravity_plot2
+gravity_ven
+```
+
+
+
+
+### After this part, the econometric models depends on the changes on this datasets.
+### So things will start to be messy.
+
+```{r}
+
+```
+
+# Econometrical Analysis
+
+```{r}
+## 62 
+# ven not included
+df5 <- df4 %>% 
+  filter(year > 1961) %>%
+  mutate(
+    FTA = 0,
+    FTA = ifelse(year > 1995,ifelse(code %in% eu, 1, 0), 0),
+    FTA = ifelse(year > 2008,ifelse(code == "alb", 1, 0), 0),
+    FTA = ifelse(year > 2003,ifelse(code == "bih", 1, 0), 0),
+    FTA = ifelse(year > 2007,ifelse(code == "egy", 1, 0), 0),
+    FTA = ifelse(year > 2011,ifelse(code == "chl", 1, 0), 0),
+    FTA = ifelse(year > 2008,ifelse(code == "geo", 1, 0), 0),
+    FTA = ifelse(year > 1997,ifelse(code == "isr", 1, 0), 0),
+    FTA = ifelse(year > 2015,ifelse(code == "mys", 1, 0), 0),
+    FTA = ifelse(year > 2016,ifelse(code == "mda", 1, 0), 0),
+    FTA = ifelse(year > 2006,ifelse(code == "mar", 1, 0), 0),
+    FTA = ifelse(year > 2010,ifelse(code == "srb", 1, 0), 0),
+    FTA = ifelse(year > 2013,ifelse(code == "kor", 1, 0), 0),
+    FTA = ifelse(year > 2005,ifelse(code == "tun", 1, 0), 0)
+  )
+
+df6 <- pdata.frame(df5, index = c("code", "year"))
+
+No_Ven_62 <- plm(log(total_trade) ~ log(gdp) + log(tr_gdp) + log(distw) + FTA,
+                 data = df6,model = "random")
+# ven included
+
+df5 <- df4 %>% 
+  filter(year > 1961) %>%
+  mutate(
+    FTA = 0,
+    FTA = ifelse(year > 1995,ifelse(code %in% eu, 1, 0), 0),
+    FTA = ifelse(year > 2008,ifelse(code == "alb", 1, 0), 0),
+    FTA = ifelse(year > 2003,ifelse(code == "bih", 1, 0), 0),
+    FTA = ifelse(year > 2007,ifelse(code == "egy", 1, 0), 0),
+    FTA = ifelse(year > 2011,ifelse(code == "chl", 1, 0), 0),
+    FTA = ifelse(year > 2008,ifelse(code == "geo", 1, 0), 0),
+    FTA = ifelse(year > 1997,ifelse(code == "isr", 1, 0), 0),
+    FTA = ifelse(year > 2015,ifelse(code == "mys", 1, 0), 0),
+    FTA = ifelse(year > 2016,ifelse(code == "mda", 1, 0), 0),
+    FTA = ifelse(year > 2006,ifelse(code == "mar", 1, 0), 0),
+    FTA = ifelse(year > 2010,ifelse(code == "srb", 1, 0), 0),
+    FTA = ifelse(year > 2013,ifelse(code == "kor", 1, 0), 0),
+    FTA = ifelse(year > 2005,ifelse(code == "tun", 1, 0), 0),
+    FTA = ifelse(year > 2016,ifelse(code == "ven", 1, 0), 0)
+  )
+
+df6 <- pdata.frame(df5, index = c("code", "year"))
+
+Yes_Ven_62 <- plm(log(total_trade) ~ log(gdp) + log(tr_gdp) + log(distw) + FTA,
+                 data = df6,model = "random")
+
+## 83
+df5 <- df4 %>% 
+  filter(year > 1983) %>%
+  mutate(
+    FTA = 0,
+    FTA = ifelse(year > 1995,ifelse(code %in% eu, 1, 0), 0),
+    FTA = ifelse(year > 2008,ifelse(code == "alb", 1, 0), 0),
+    FTA = ifelse(year > 2003,ifelse(code == "bih", 1, 0), 0),
+    FTA = ifelse(year > 2007,ifelse(code == "egy", 1, 0), 0),
+    FTA = ifelse(year > 2011,ifelse(code == "chl", 1, 0), 0),
+    FTA = ifelse(year > 2008,ifelse(code == "geo", 1, 0), 0),
+    FTA = ifelse(year > 1997,ifelse(code == "isr", 1, 0), 0),
+    FTA = ifelse(year > 2015,ifelse(code == "mys", 1, 0), 0),
+    FTA = ifelse(year > 2016,ifelse(code == "mda", 1, 0), 0),
+    FTA = ifelse(year > 2006,ifelse(code == "mar", 1, 0), 0),
+    FTA = ifelse(year > 2010,ifelse(code == "srb", 1, 0), 0),
+    FTA = ifelse(year > 2013,ifelse(code == "kor", 1, 0), 0),
+    FTA = ifelse(year > 2005,ifelse(code == "tun", 1, 0), 0)
+  )
+
+df6 <- pdata.frame(df5, index = c("code", "year"))
+
+No_Ven_80 <- plm(log(total_trade) ~ log(gdp) + log(tr_gdp) + log(distw) + FTA,
+                 data = df6,model = "random")
+# ven included
+
+df5 <- df4 %>% 
+  filter(year > 1983) %>%
+  mutate(
+    FTA = 0,
+    FTA = ifelse(year > 1995,ifelse(code %in% eu, 1, 0), 0),
+    FTA = ifelse(year > 2008,ifelse(code == "alb", 1, 0), 0),
+    FTA = ifelse(year > 2003,ifelse(code == "bih", 1, 0), 0),
+    FTA = ifelse(year > 2007,ifelse(code == "egy", 1, 0), 0),
+    FTA = ifelse(year > 2011,ifelse(code == "chl", 1, 0), 0),
+    FTA = ifelse(year > 2008,ifelse(code == "geo", 1, 0), 0),
+    FTA = ifelse(year > 1997,ifelse(code == "isr", 1, 0), 0),
+    FTA = ifelse(year > 2015,ifelse(code == "mys", 1, 0), 0),
+    FTA = ifelse(year > 2016,ifelse(code == "mda", 1, 0), 0),
+    FTA = ifelse(year > 2006,ifelse(code == "mar", 1, 0), 0),
+    FTA = ifelse(year > 2010,ifelse(code == "srb", 1, 0), 0),
+    FTA = ifelse(year > 2013,ifelse(code == "kor", 1, 0), 0),
+    FTA = ifelse(year > 2005,ifelse(code == "tun", 1, 0), 0),
+    FTA = ifelse(year > 2016,ifelse(code == "ven", 1, 0), 0)
+  )
+
+df6 <- pdata.frame(df5, index = c("code", "year"))
+
+Yes_Ven_80 <- plm(log(total_trade) ~ log(gdp) + log(tr_gdp) + log(distw) + FTA,
+                 data = df6,model = "random")
+
+## 02
+df5 <- df4 %>% 
+  filter(year > 2002) %>%
+  mutate(
+    FTA = 0,
+    FTA = ifelse(year > 1995,ifelse(code %in% eu, 1, 0), 0),
+    FTA = ifelse(year > 2008,ifelse(code == "alb", 1, 0), 0),
+    FTA = ifelse(year > 2003,ifelse(code == "bih", 1, 0), 0),
+    FTA = ifelse(year > 2007,ifelse(code == "egy", 1, 0), 0),
+    FTA = ifelse(year > 2011,ifelse(code == "chl", 1, 0), 0),
+    FTA = ifelse(year > 2008,ifelse(code == "geo", 1, 0), 0),
+    FTA = ifelse(year > 1997,ifelse(code == "isr", 1, 0), 0),
+    FTA = ifelse(year > 2015,ifelse(code == "mys", 1, 0), 0),
+    FTA = ifelse(year > 2016,ifelse(code == "mda", 1, 0), 0),
+    FTA = ifelse(year > 2006,ifelse(code == "mar", 1, 0), 0),
+    FTA = ifelse(year > 2010,ifelse(code == "srb", 1, 0), 0),
+    FTA = ifelse(year > 2013,ifelse(code == "kor", 1, 0), 0),
+    FTA = ifelse(year > 2005,ifelse(code == "tun", 1, 0), 0)
+  )
+
+df6 <- pdata.frame(df5, index = c("code", "year"))
+
+No_Ven_00 <- plm(log(total_trade) ~ log(gdp) + log(tr_gdp) + log(distw) + FTA,
+                 data = df6,model = "random")
+# ven included
+
+df5 <- df4 %>% 
+  filter(year > 2002) %>%
+  mutate(
+    FTA = 0,
+    FTA = ifelse(year > 1995,ifelse(code %in% eu, 1, 0), 0),
+    FTA = ifelse(year > 2008,ifelse(code == "alb", 1, 0), 0),
+    FTA = ifelse(year > 2003,ifelse(code == "bih", 1, 0), 0),
+    FTA = ifelse(year > 2007,ifelse(code == "egy", 1, 0), 0),
+    FTA = ifelse(year > 2011,ifelse(code == "chl", 1, 0), 0),
+    FTA = ifelse(year > 2008,ifelse(code == "geo", 1, 0), 0),
+    FTA = ifelse(year > 1997,ifelse(code == "isr", 1, 0), 0),
+    FTA = ifelse(year > 2015,ifelse(code == "mys", 1, 0), 0),
+    FTA = ifelse(year > 2016,ifelse(code == "mda", 1, 0), 0),
+    FTA = ifelse(year > 2006,ifelse(code == "mar", 1, 0), 0),
+    FTA = ifelse(year > 2010,ifelse(code == "srb", 1, 0), 0),
+    FTA = ifelse(year > 2013,ifelse(code == "kor", 1, 0), 0),
+    FTA = ifelse(year > 2005,ifelse(code == "tun", 1, 0), 0),
+    FTA = ifelse(year > 2016,ifelse(code == "ven", 1, 0), 0)
+  )
+
+df6 <- pdata.frame(df5, index = c("code", "year"))
+
+Yes_Ven_00 <- plm(log(total_trade) ~ log(gdp) + log(tr_gdp) + log(distw) + FTA,
+                 data = df6,model = "random")
+
+stargazer(No_Ven_62, Yes_Ven_62, No_Ven_80, Yes_Ven_80, No_Ven_00, Yes_Ven_00,
+          type = "text", 
+          column.labels = c("No Ven 62","Yes Ven 62","No Ven 80","Yes Ven 80","No Ven 00","Yes Ven 00"),
+          object.names = T)
+```
+
+#the answers to the last two questions
+## adding VEN_TUR as dummy 
+```{r}
+
+df5 <- df4 %>% 
+  filter(year > 1962) %>%
+  mutate(
+    FTA = 0,
+    FTA = ifelse(year > 1995,ifelse(code %in% eu, 1, 0), 0),
+    FTA = ifelse(year > 2008,ifelse(code == "alb", 1, 0), 0),
+    FTA = ifelse(year > 2003,ifelse(code == "bih", 1, 0), 0),
+    FTA = ifelse(year > 2007,ifelse(code == "egy", 1, 0), 0),
+    FTA = ifelse(year > 2011,ifelse(code == "chl", 1, 0), 0),
+    FTA = ifelse(year > 2008,ifelse(code == "geo", 1, 0), 0),
+    FTA = ifelse(year > 1997,ifelse(code == "isr", 1, 0), 0),
+    FTA = ifelse(year > 2015,ifelse(code == "mys", 1, 0), 0),
+    FTA = ifelse(year > 2016,ifelse(code == "mda", 1, 0), 0),
+    FTA = ifelse(year > 2006,ifelse(code == "mar", 1, 0), 0),
+    FTA = ifelse(year > 2010,ifelse(code == "srb", 1, 0), 0),
+    FTA = ifelse(year > 2013,ifelse(code == "kor", 1, 0), 0),
+    FTA = ifelse(year > 2005,ifelse(code == "tun", 1, 0), 0),
+    VEN_TUR = ifelse(year > 2016,ifelse(code == "ven", 1, 0), 0)
+  )
+
+df6 <- pdata.frame(df5, index = c("code", "year"))
+
+Add_Ven_Tur<- plm(log(total_trade) ~ log(gdp) + log(tr_gdp) + log(distw) + FTA + VEN_TUR,
+                 data = df6,model = "random")
+
+
+stargazer(Add_Ven_Tur, type = "text")
+```
+
+## making time lagged (2 years)
+```{r}
+df5 <- df4 %>% 
+  filter(year > 1962) %>%
+  mutate(
+    FTA = 0,
+    FTA = ifelse(year > 1993,ifelse(code %in% eu, 1, 0), 0),
+    FTA = ifelse(year > 2006,ifelse(code == "alb", 1, 0), 0),
+    FTA = ifelse(year > 2001,ifelse(code == "bih", 1, 0), 0),
+    FTA = ifelse(year > 2005,ifelse(code == "egy", 1, 0), 0),
+    FTA = ifelse(year > 2009,ifelse(code == "chl", 1, 0), 0),
+    FTA = ifelse(year > 2006,ifelse(code == "geo", 1, 0), 0),
+    FTA = ifelse(year > 1995,ifelse(code == "isr", 1, 0), 0),
+    FTA = ifelse(year > 2013,ifelse(code == "mys", 1, 0), 0),
+    FTA = ifelse(year > 2014,ifelse(code == "mda", 1, 0), 0),
+    FTA = ifelse(year > 2004,ifelse(code == "mar", 1, 0), 0),
+    FTA = ifelse(year > 2008,ifelse(code == "srb", 1, 0), 0),
+    FTA = ifelse(year > 2011,ifelse(code == "kor", 1, 0), 0),
+    FTA = ifelse(year > 2003,ifelse(code == "tun", 1, 0), 0),
+    VEN_TUR = ifelse(year > 2016,ifelse(code == "ven", 1, 0), 0)
+  )
+
+df6 <- pdata.frame(df5, index = c("code", "year"))
+
+Add_Ven_Tur<- plm(log(total_trade) ~ log(gdp) + log(tr_gdp) + log(distw) + FTA + VEN_TUR,
+                 data = df6,model = "random")
+
+stargazer(Add_Ven_Tur, type = "text")
+```
+
+
+#Labor Analysis
+```{r}
+DvsS <- WDI(country = c("TUR", "VEN"),
+            indicator = c("SL.TLF.TOTL.IN",
+                          "SL.TLF.TOTL.FE.ZS"))
+DS <- DvsS %>%
+  filter(year > 1990) %>%
+  mutate(
+    LaborForce = SL.TLF.TOTL.IN / 1000000 ,
+    LPer_FE = round(SL.TLF.TOTL.FE.ZS, digits = 2) / 100,
+    Labor_FE = LaborForce * LPer_FE,
+    Labor_MA = LaborForce - Labor_FE) %>%
+  select(-c(iso2c, SL.TLF.TOTL.IN, SL.TLF.TOTL.FE.ZS))
+DvsS2 <- WDI(country = c("TUR", "VEN"),
+            indicator = c("SL.AGR.EMPL.MA.ZS",
+                          "SL.IND.EMPL.MA.ZS",
+                          "SL.SRV.EMPL.MA.ZS",
+                          "SL.AGR.EMPL.FE.ZS",
+                          "SL.IND.EMPL.FE.ZS",
+                          "SL.SRV.EMPL.FE.ZS"))
+DS2 <- DvsS2 %>% filter(year > 1990) %>%
+  mutate(
+    AGRPer_MA = round(SL.AGR.EMPL.MA.ZS, digits = 2) / 100,
+    INDPer_MA = round(SL.IND.EMPL.MA.ZS, digits = 2) / 100,
+    SRVPer_MA = round(SL.SRV.EMPL.MA.ZS, digits = 2) / 100,
+    AGRPer_FE = round(SL.AGR.EMPL.FE.ZS, digits = 2) / 100,
+    INDPer_FE = round(SL.IND.EMPL.FE.ZS, digits = 2) / 100,
+    SRVPer_FE = round(SL.SRV.EMPL.FE.ZS, digits = 2) / 100
+  ) %>%
+  select(-c(iso2c, SL.AGR.EMPL.MA.ZS, SL.IND.EMPL.MA.ZS,SL.SRV.EMPL.MA.ZS,
+            SL.AGR.EMPL.FE.ZS, SL.IND.EMPL.FE.ZS,SL.SRV.EMPL.FE.ZS,
+            country, year))
+
+DS3 <- cbind(DS, DS2)
+DS4 <- DS3 %>%
+  mutate(
+    AGR_MA = Labor_MA * AGRPer_MA,
+    IND_MA = Labor_MA * INDPer_MA,
+    SRV_MA = Labor_MA * SRVPer_MA,
+    AGR_FE = Labor_FE * AGRPer_FE,
+    IND_FE = Labor_FE * INDPer_FE,
+    SRV_FE = Labor_FE * SRVPer_FE) %>% 
+  reshape::melt(id = c("country", "year")) %>% 
+  separate(
+  col = variable,
+  into = c("ind", "Gender"),
+  sep = "_") %>%
+  mutate(
+    ind = as.factor(ind),
+    Gender = as.factor(Gender))
+  
+plot_labor <- DS4 %>%
+  filter(ind == "LaborForce") %>%
+  ggplot()+
+  geom_line(aes(x = year, y = value, color = country), 
+           stat = "identity",position = "dodge")
+
+```
+
+```{r}
+plot_labor
+```
+
